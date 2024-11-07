@@ -18,8 +18,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -57,13 +58,13 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 			},
 		})
 		awsEnv.EC2API.DescribeImagesOutput.Set(&ec2.DescribeImagesOutput{
-			Images: []*ec2.Image{
+			Images: []ec2types.Image{
 				{
 					Name:         aws.String("amd64-standard"),
 					ImageId:      aws.String("ami-amd64-standard"),
 					CreationDate: aws.String(time.Now().Format(time.RFC3339)),
-					Architecture: aws.String("x86_64"),
-					Tags: []*ec2.Tag{
+					Architecture: "x86_64",
+					Tags: []ec2types.Tag{
 						{Key: aws.String("Name"), Value: aws.String("amd64-standard")},
 						{Key: aws.String("foo"), Value: aws.String("bar")},
 					},
@@ -72,8 +73,8 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 					Name:         aws.String("amd64-standard-new"),
 					ImageId:      aws.String("ami-amd64-standard-new"),
 					CreationDate: aws.String(time.Now().Add(time.Minute).Format(time.RFC3339)),
-					Architecture: aws.String("x86_64"),
-					Tags: []*ec2.Tag{
+					Architecture: "x86_64",
+					Tags: []ec2types.Tag{
 						{Key: aws.String("Name"), Value: aws.String("amd64-standard")},
 						{Key: aws.String("foo"), Value: aws.String("bar")},
 					},
@@ -82,8 +83,8 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 					Name:         aws.String("amd64-nvidia"),
 					ImageId:      aws.String("ami-amd64-nvidia"),
 					CreationDate: aws.String(time.Now().Format(time.RFC3339)),
-					Architecture: aws.String("x86_64"),
-					Tags: []*ec2.Tag{
+					Architecture: "x86_64",
+					Tags: []ec2types.Tag{
 						{Key: aws.String("Name"), Value: aws.String("amd64-nvidia")},
 						{Key: aws.String("foo"), Value: aws.String("bar")},
 					},
@@ -92,8 +93,8 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 					Name:         aws.String("amd64-neuron"),
 					ImageId:      aws.String("ami-amd64-neuron"),
 					CreationDate: aws.String(time.Now().Format(time.RFC3339)),
-					Architecture: aws.String("x86_64"),
-					Tags: []*ec2.Tag{
+					Architecture: "x86_64",
+					Tags: []ec2types.Tag{
 						{Key: aws.String("Name"), Value: aws.String("amd64-neuron")},
 						{Key: aws.String("foo"), Value: aws.String("bar")},
 					},
@@ -102,8 +103,8 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 					Name:         aws.String("arm64-standard"),
 					ImageId:      aws.String("ami-arm64-standard"),
 					CreationDate: aws.String(time.Now().Format(time.RFC3339)),
-					Architecture: aws.String("arm64"),
-					Tags: []*ec2.Tag{
+					Architecture: "arm64",
+					Tags: []ec2types.Tag{
 						{Key: aws.String("Name"), Value: aws.String("arm64-standard")},
 						{Key: aws.String("foo"), Value: aws.String("bar")},
 					},
@@ -112,8 +113,8 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 					Name:         aws.String("arm64-nvidia"),
 					ImageId:      aws.String("ami-arm64-nvidia"),
 					CreationDate: aws.String(time.Now().Format(time.RFC3339)),
-					Architecture: aws.String("arm64"),
-					Tags: []*ec2.Tag{
+					Architecture: "arm64",
+					Tags: []ec2types.Tag{
 						{Key: aws.String("Name"), Value: aws.String("arm64-nvidia")},
 						{Key: aws.String("foo"), Value: aws.String("bar")},
 					},
@@ -304,7 +305,7 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 			ExpectObjectReconciled(ctx, env.Client, statusController, nodeClass)
 			nodeClass = ExpectExists(ctx, env.Client, nodeClass)
 
-			Expect(len(nodeClass.Status.AMIs)).To(Equal(6))
+			Expect(len(nodeClass.Status.AMIs)).To(Equal(4))
 			Expect(nodeClass.Status.AMIs).To(ContainElements([]v1.AMI{
 				{
 					Name: "amd64-standard",
@@ -370,37 +371,6 @@ var _ = Describe("NodeClass AMI Status Controller", func() {
 						},
 						{
 							Key:      v1.LabelInstanceGPUCount,
-							Operator: corev1.NodeSelectorOpExists,
-						},
-					},
-				},
-				// Note: Bottlerocket uses the same AMI for nvidia and neuron, we use the nvidia AMI here
-				{
-					Name: "amd64-nvidia",
-					ID:   "ami-amd64-nvidia",
-					Requirements: []corev1.NodeSelectorRequirement{
-						{
-							Key:      corev1.LabelArchStable,
-							Operator: corev1.NodeSelectorOpIn,
-							Values:   []string{karpv1.ArchitectureAmd64},
-						},
-						{
-							Key:      v1.LabelInstanceAcceleratorCount,
-							Operator: corev1.NodeSelectorOpExists,
-						},
-					},
-				},
-				{
-					Name: "arm64-nvidia",
-					ID:   "ami-arm64-nvidia",
-					Requirements: []corev1.NodeSelectorRequirement{
-						{
-							Key:      corev1.LabelArchStable,
-							Operator: corev1.NodeSelectorOpIn,
-							Values:   []string{karpv1.ArchitectureArm64},
-						},
-						{
-							Key:      v1.LabelInstanceAcceleratorCount,
 							Operator: corev1.NodeSelectorOpExists,
 						},
 					},
