@@ -29,26 +29,43 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
+	nodeutils "sigs.k8s.io/karpenter/pkg/utils/node"
 
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/instancetype"
 )
 
 type Controller struct {
 	kubeClient           client.Client
+	cloudProvider        cloudprovider.CloudProvider
 	instancetypeProvider *instancetype.DefaultProvider
 }
 
-func NewController(kubeClient client.Client, instancetypeProvider *instancetype.DefaultProvider) *Controller {
+func NewController(kubeClient client.Client, cloudProvider cloudprovider.CloudProvider, instancetypeProvider *instancetype.DefaultProvider) *Controller {
 	return &Controller{
 		kubeClient:           kubeClient,
+		cloudProvider:        cloudProvider,
 		instancetypeProvider: instancetypeProvider,
 	}
 }
 
 func (c *Controller) Reconcile(ctx context.Context, node *corev1.Node) (reconcile.Result, error) {
 	ctx = injection.WithControllerName(ctx, "providers.instancetype.capacity")
-	if err := c.instancetypeProvider.UpdateInstanceTypeCapacityFromNode(ctx, c.kubeClient, node); err != nil {
+	if !nodeutils.IsManaged(node, c.cloudProvider) {
+		return reconcile.Result{}, nil
+	}
+	nodeClaim, err := nodeutils.NodeClaimForNode(ctx, c.kubeClient, node)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to get nodeclaim for node, %w", err)
+	}
+
+	nodeClass := &v1.EC2NodeClass{}
+	if err = c.kubeClient.Get(ctx, client.ObjectKey{Name: nodeClaim.Spec.NodeClassRef.Name}, nodeClass); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to get ec2nodeclass, %w", err)
+	}
+	if err := c.instancetypeProvider.UpdateInstanceTypeCapacityFromNode(ctx, node, nodeClaim, nodeClass); err != nil {
 		return reconcile.Result{}, fmt.Errorf("updating discovered capacity cache, %w", err)
 	}
 	return reconcile.Result{}, nil
@@ -71,7 +88,7 @@ func (c *Controller) Register(_ context.Context, m manager.Manager) error {
 			},
 			DeleteFunc:  func(e event.TypedDeleteEvent[client.Object]) bool { return false },
 			GenericFunc: func(e event.TypedGenericEvent[client.Object]) bool { return false },
-		})).
+		}, nodeutils.IsManagedPredicateFuncs(c.cloudProvider))).
 		WithOptions(controller.Options{
 			RateLimiter:             reasonable.RateLimiter(),
 			MaxConcurrentReconciles: 1,

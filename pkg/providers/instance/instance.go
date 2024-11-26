@@ -69,7 +69,7 @@ var (
 )
 
 type Provider interface {
-	Create(context.Context, *v1.EC2NodeClass, *karpv1.NodeClaim, []*cloudprovider.InstanceType) (*Instance, error)
+	Create(context.Context, *v1.EC2NodeClass, *karpv1.NodeClaim, map[string]string, []*cloudprovider.InstanceType) (*Instance, error)
 	Get(context.Context, string) (*Instance, error)
 	List(context.Context) ([]*Instance, error)
 	Delete(context.Context, string) error
@@ -97,7 +97,7 @@ func NewDefaultProvider(ctx context.Context, region string, ec2api sdk.EC2API, u
 	}
 }
 
-func (p *DefaultProvider) Create(ctx context.Context, nodeClass *v1.EC2NodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*cloudprovider.InstanceType) (*Instance, error) {
+func (p *DefaultProvider) Create(ctx context.Context, nodeClass *v1.EC2NodeClass, nodeClaim *karpv1.NodeClaim, tags map[string]string, instanceTypes []*cloudprovider.InstanceType) (*Instance, error) {
 	schedulingRequirements := scheduling.NewNodeSelectorRequirementsWithMinValues(nodeClaim.Spec.Requirements...)
 	// Only filter the instances if there are no minValues in the requirement.
 	if !schedulingRequirements.HasMinValues() {
@@ -105,10 +105,8 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *v1.EC2NodeClass
 	}
 	instanceTypes, err := cloudprovider.InstanceTypes(instanceTypes).Truncate(schedulingRequirements, maxInstanceTypes)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "truncating instance types")
-		return nil, fmt.Errorf("truncating instance types, %w", err)
+		return nil, cloudprovider.NewCreateError(fmt.Errorf("truncating instance types, %w", err), "Error truncating instance types based on the passed-in requirements")
 	}
-	tags := getTags(ctx, nodeClass, nodeClaim)
 	fleetInstance, err := p.launchInstance(ctx, nodeClass, nodeClaim, instanceTypes, tags)
 	if awserrors.IsLaunchTemplateNotFound(err) {
 		// retry once if launch template is not found. This allows karpenter to generate a new LT if the
@@ -116,7 +114,6 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *v1.EC2NodeClass
 		fleetInstance, err = p.launchInstance(ctx, nodeClass, nodeClaim, instanceTypes, tags)
 	}
 	if err != nil {
-		log.FromContext(ctx).Error(err, "launching instance")
 		return nil, err
 	}
 	efaEnabled := lo.Contains(lo.Keys(nodeClaim.Spec.Resources.Requests), v1.ResourceEFA)
@@ -151,15 +148,15 @@ func (p *DefaultProvider) List(ctx context.Context) ([]*Instance, error) {
 		Filters: []ec2types.Filter{
 			{
 				Name:   aws.String("tag-key"),
-				Values: []string{karpv1.NodePoolLabelKey},
+				Values: []string{v1.NodePoolTagKey},
 			},
 			{
 				Name:   aws.String("tag-key"),
-				Values: []string{v1.LabelNodeClass},
+				Values: []string{v1.NodeClassTagKey},
 			},
 			{
-				Name:   aws.String("tag-key"),
-				Values: []string{fmt.Sprintf("kubernetes.io/cluster/%s", options.FromContext(ctx).ClusterName)},
+				Name:   aws.String(fmt.Sprintf("tag:%s", v1.EKSClusterNameTagKey)),
+				Values: []string{options.FromContext(ctx).ClusterName},
 			},
 			instanceStateFilter,
 		},
@@ -167,10 +164,10 @@ func (p *DefaultProvider) List(ctx context.Context) ([]*Instance, error) {
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
-		out.Reservations = append(out.Reservations, page.Reservations...)
 		if err != nil {
 			return nil, fmt.Errorf("describing ec2 instances, %w", err)
 		}
+		out.Reservations = append(out.Reservations, page.Reservations...)
 	}
 	instances, err := instancesFromOutput(out)
 	return instances, cloudprovider.IgnoreNodeClaimNotFoundError(err)
@@ -214,13 +211,13 @@ func (p *DefaultProvider) launchInstance(ctx context.Context, nodeClass *v1.EC2N
 	capacityType := p.getCapacityType(nodeClaim, instanceTypes)
 	zonalSubnets, err := p.subnetProvider.ZonalSubnetsForLaunch(ctx, nodeClass, instanceTypes, capacityType)
 	if err != nil {
-		return ec2types.CreateFleetInstance{}, fmt.Errorf("getting subnets, %w", err)
+		return ec2types.CreateFleetInstance{}, cloudprovider.NewCreateError(fmt.Errorf("getting subnets, %w", err), "Error getting subnets")
 	}
 
 	// Get Launch Template Configs, which may differ due to GPU or Architecture requirements
 	launchTemplateConfigs, err := p.getLaunchTemplateConfigs(ctx, nodeClass, nodeClaim, instanceTypes, zonalSubnets, capacityType, tags)
 	if err != nil {
-		return ec2types.CreateFleetInstance{}, fmt.Errorf("getting launch template configs, %w", err)
+		return ec2types.CreateFleetInstance{}, cloudprovider.NewCreateError(fmt.Errorf("getting launch template configs, %w", err), "Error getting launch template configs")
 	}
 	if err := p.checkODFallback(nodeClaim, instanceTypes, launchTemplateConfigs); err != nil {
 		log.FromContext(ctx).Error(err, "failed while checking on-demand fallback")
@@ -249,6 +246,7 @@ func (p *DefaultProvider) launchInstance(ctx context.Context, nodeClass *v1.EC2N
 	createFleetOutput, err := p.ec2Batcher.CreateFleet(ctx, createFleetInput)
 	p.subnetProvider.UpdateInflightIPs(createFleetInput, createFleetOutput, instanceTypes, lo.Values(zonalSubnets), capacityType)
 	if err != nil {
+		conditionMessage := "Error creating fleet"
 		if awserrors.IsLaunchTemplateNotFound(err) {
 			for _, lt := range launchTemplateConfigs {
 				p.launchTemplateProvider.InvalidateCache(ctx, aws.ToString(lt.LaunchTemplateSpecification.LaunchTemplateName), aws.ToString(lt.LaunchTemplateSpecification.LaunchTemplateId))
@@ -257,25 +255,15 @@ func (p *DefaultProvider) launchInstance(ctx context.Context, nodeClass *v1.EC2N
 		}
 		var reqErr *awshttp.ResponseError
 		if errors.As(err, &reqErr) {
-			return ec2types.CreateFleetInstance{}, fmt.Errorf("creating fleet %w (%v)", err, reqErr.ServiceRequestID())
+			return ec2types.CreateFleetInstance{}, cloudprovider.NewCreateError(fmt.Errorf("creating fleet %w (%v)", err, reqErr.ServiceRequestID()), conditionMessage)
 		}
-		return ec2types.CreateFleetInstance{}, fmt.Errorf("creating fleet %w", err)
+		return ec2types.CreateFleetInstance{}, cloudprovider.NewCreateError(fmt.Errorf("creating fleet %w", err), conditionMessage)
 	}
 	p.updateUnavailableOfferingsCache(ctx, createFleetOutput.Errors, capacityType)
 	if len(createFleetOutput.Instances) == 0 || len(createFleetOutput.Instances[0].InstanceIds) == 0 {
 		return ec2types.CreateFleetInstance{}, combineFleetErrors(createFleetOutput.Errors)
 	}
 	return createFleetOutput.Instances[0], nil
-}
-
-func getTags(ctx context.Context, nodeClass *v1.EC2NodeClass, nodeClaim *karpv1.NodeClaim) map[string]string {
-	staticTags := map[string]string{
-		fmt.Sprintf("kubernetes.io/cluster/%s", options.FromContext(ctx).ClusterName): "owned",
-		karpv1.NodePoolLabelKey: nodeClaim.Labels[karpv1.NodePoolLabelKey],
-		v1.EKSClusterNameTagKey: options.FromContext(ctx).ClusterName,
-		v1.LabelNodeClass:       nodeClass.Name,
-	}
-	return lo.Assign(nodeClass.Spec.Tags, staticTags)
 }
 
 func (p *DefaultProvider) checkODFallback(nodeClaim *karpv1.NodeClaim, instanceTypes []*cloudprovider.InstanceType, launchTemplateConfigs []ec2types.FleetLaunchTemplateConfigRequest) error {
@@ -514,5 +502,5 @@ func combineFleetErrors(fleetErrs []ec2types.CreateFleetError) (errs error) {
 	if iceErrorCount == len(fleetErrs) {
 		return cloudprovider.NewInsufficientCapacityError(fmt.Errorf("with fleet error(s), %w", errs))
 	}
-	return fmt.Errorf("with fleet error(s), %w", errs)
+	return cloudprovider.NewCreateError(errs, "Error creating fleet")
 }

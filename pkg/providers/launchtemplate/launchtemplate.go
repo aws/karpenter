@@ -79,6 +79,7 @@ type DefaultProvider struct {
 	CABundle              *string
 	ClusterEndpoint       string
 	ClusterCIDR           atomic.Pointer[string]
+	ClusterIPFamily       corev1.IPFamily
 }
 
 func NewDefaultProvider(ctx context.Context, cache *cache.Cache, ec2api sdk.EC2API, eksapi sdk.EKSAPI, amiFamily amifamily.Resolver,
@@ -95,6 +96,7 @@ func NewDefaultProvider(ctx context.Context, cache *cache.Cache, ec2api sdk.EC2A
 		cm:                    pretty.NewChangeMonitor(),
 		KubeDNSIP:             kubeDNSIP,
 		ClusterEndpoint:       clusterEndpoint,
+		ClusterIPFamily:       lo.Ternary(kubeDNSIP != nil && kubeDNSIP.To4() == nil, corev1.IPv6Protocol, corev1.IPv4Protocol),
 	}
 	l.cache.OnEvicted(l.cachedEvictedFunc(ctx))
 	go func() {
@@ -259,7 +261,7 @@ func (p *DefaultProvider) createLaunchTemplate(ctx context.Context, options *ami
 		TagSpecifications: []ec2types.TagSpecification{
 			{
 				ResourceType: ec2types.ResourceTypeLaunchTemplate,
-				Tags:         utils.MergeTags(options.Tags, map[string]string{v1.TagManagedLaunchTemplate: options.ClusterName, v1.LabelNodeClass: options.NodeClassName}),
+				Tags:         utils.MergeTags(options.Tags),
 			},
 		},
 	})
@@ -284,22 +286,23 @@ func (p *DefaultProvider) generateNetworkInterfaces(options *amifamily.LaunchTem
 				// Instances launched with multiple pre-configured network interfaces cannot set AssociatePublicIPAddress to true. This is an EC2 limitation. However, this does not apply for instances
 				// with a single EFA network interface, and we should support those use cases. Launch failures with multiple enis should be considered user misconfiguration.
 				AssociatePublicIpAddress: options.AssociatePublicIPAddress,
+				PrimaryIpv6:              lo.Ternary(p.ClusterIPFamily == corev1.IPv6Protocol, lo.ToPtr(true), nil),
+				Ipv6AddressCount:         lo.Ternary(p.ClusterIPFamily == corev1.IPv6Protocol, lo.ToPtr(int32(1)), nil),
 			}
 		})
 	}
 
-	if options.AssociatePublicIPAddress != nil {
-		return []ec2types.LaunchTemplateInstanceNetworkInterfaceSpecificationRequest{
-			{
-				AssociatePublicIpAddress: options.AssociatePublicIPAddress,
-				DeviceIndex:              aws.Int32(0),
-				Groups: lo.Map(options.SecurityGroups, func(s v1.SecurityGroup, _ int) string {
-					return s.ID
-				}),
-			},
-		}
+	return []ec2types.LaunchTemplateInstanceNetworkInterfaceSpecificationRequest{
+		{
+			AssociatePublicIpAddress: options.AssociatePublicIPAddress,
+			DeviceIndex:              aws.Int32(0),
+			Groups: lo.Map(options.SecurityGroups, func(s v1.SecurityGroup, _ int) string {
+				return s.ID
+			}),
+			PrimaryIpv6:      lo.Ternary(p.ClusterIPFamily == corev1.IPv6Protocol, lo.ToPtr(true), nil),
+			Ipv6AddressCount: lo.Ternary(p.ClusterIPFamily == corev1.IPv6Protocol, lo.ToPtr(int32(1)), nil),
+		},
 	}
-	return nil
 }
 
 func (p *DefaultProvider) blockDeviceMappings(blockDeviceMappings []*v1.BlockDeviceMapping) []ec2types.LaunchTemplateBlockDeviceMappingRequest {
@@ -342,12 +345,12 @@ func (p *DefaultProvider) volumeSize(quantity *resource.Quantity) *int32 {
 // Any error during hydration will result in a panic
 func (p *DefaultProvider) hydrateCache(ctx context.Context) {
 	clusterName := options.FromContext(ctx).ClusterName
-	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("tag-key", v1.TagManagedLaunchTemplate, "tag-value", clusterName))
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("tag-key", v1.EKSClusterNameTagKey, "tag-value", clusterName))
 
 	paginator := ec2.NewDescribeLaunchTemplatesPaginator(p.ec2api, &ec2.DescribeLaunchTemplatesInput{
 		Filters: []ec2types.Filter{
 			{
-				Name:   aws.String(fmt.Sprintf("tag:%s", v1.TagManagedLaunchTemplate)),
+				Name:   aws.String(fmt.Sprintf("tag:%s", v1.EKSClusterNameTagKey)),
 				Values: []string{clusterName},
 			},
 		},
@@ -394,11 +397,11 @@ func (p *DefaultProvider) DeleteAll(ctx context.Context, nodeClass *v1.EC2NodeCl
 	paginator := ec2.NewDescribeLaunchTemplatesPaginator(p.ec2api, &ec2.DescribeLaunchTemplatesInput{
 		Filters: []ec2types.Filter{
 			{
-				Name:   aws.String(fmt.Sprintf("tag:%s", v1.TagManagedLaunchTemplate)),
+				Name:   aws.String(fmt.Sprintf("tag:%s", v1.EKSClusterNameTagKey)),
 				Values: []string{clusterName},
 			},
 			{
-				Name:   aws.String(fmt.Sprintf("tag:%s", v1.LabelNodeClass)),
+				Name:   aws.String(fmt.Sprintf("tag:%s", v1.NodeClassTagKey)),
 				Values: []string{nodeClass.Name},
 			},
 		},

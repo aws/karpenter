@@ -60,7 +60,7 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	env = coretest.NewEnvironment(coretest.WithCRDs(apis.CRDs...), coretest.WithCRDs(v1alpha1.CRDs...), coretest.WithFieldIndexers(test.EC2NodeClassFieldIndexer(ctx)))
+	env = coretest.NewEnvironment(coretest.WithCRDs(apis.CRDs...), coretest.WithCRDs(v1alpha1.CRDs...), coretest.WithFieldIndexers(coretest.NodeClaimNodeClassRefFieldIndexer(ctx)))
 	ctx = coreoptions.ToContext(ctx, coretest.Options())
 	ctx = options.ToContext(ctx, test.Options())
 	awsEnv = test.NewEnvironment(ctx, env)
@@ -139,9 +139,9 @@ var _ = Describe("NodeClass Termination", func() {
 	})
 	It("should succeed to delete the launch template", func() {
 		ltName1 := aws.String(fake.LaunchTemplateName())
-		awsEnv.EC2API.LaunchTemplates.Store(ltName1, ec2types.LaunchTemplate{LaunchTemplateName: ltName1, LaunchTemplateId: aws.String(fake.LaunchTemplateID()), Tags: []ec2types.Tag{{Key: aws.String("karpenter.k8s.aws/cluster"), Value: aws.String("test-cluster")}, {Key: aws.String("karpenter.k8s.aws/ec2nodeclass"), Value: aws.String(nodeClass.Name)}}})
+		awsEnv.EC2API.LaunchTemplates.Store(ltName1, ec2types.LaunchTemplate{LaunchTemplateName: ltName1, LaunchTemplateId: aws.String(fake.LaunchTemplateID()), Tags: []ec2types.Tag{{Key: aws.String("eks:eks-cluster-name"), Value: aws.String("test-cluster")}, {Key: aws.String("karpenter.k8s.aws/ec2nodeclass"), Value: aws.String(nodeClass.Name)}}})
 		ltName2 := aws.String(fake.LaunchTemplateName())
-		awsEnv.EC2API.LaunchTemplates.Store(ltName2, ec2types.LaunchTemplate{LaunchTemplateName: ltName2, LaunchTemplateId: aws.String(fake.LaunchTemplateID()), Tags: []ec2types.Tag{{Key: aws.String("karpenter.k8s.aws/cluster"), Value: aws.String("test-cluster")}, {Key: aws.String("karpenter.k8s.aws/ec2nodeclass"), Value: aws.String(nodeClass.Name)}}})
+		awsEnv.EC2API.LaunchTemplates.Store(ltName2, ec2types.LaunchTemplate{LaunchTemplateName: ltName2, LaunchTemplateId: aws.String(fake.LaunchTemplateID()), Tags: []ec2types.Tag{{Key: aws.String("eks:eks-cluster-name"), Value: aws.String("test-cluster")}, {Key: aws.String("karpenter.k8s.aws/ec2nodeclass"), Value: aws.String(nodeClass.Name)}}})
 		_, ok := awsEnv.EC2API.LaunchTemplates.Load(ltName1)
 		Expect(ok).To(BeTrue())
 		_, ok = awsEnv.EC2API.LaunchTemplates.Load(ltName2)

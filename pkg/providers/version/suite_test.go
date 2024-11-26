@@ -12,7 +12,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package status_test
+package version_test
 
 import (
 	"context"
@@ -24,10 +24,12 @@ import (
 	coretest "sigs.k8s.io/karpenter/pkg/test"
 
 	"github.com/aws/karpenter-provider-aws/pkg/apis"
-	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
-	"github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclass/status"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
+
+	controllersversion "github.com/aws/karpenter-provider-aws/pkg/controllers/providers/version"
+	environmentaws "github.com/aws/karpenter-provider-aws/test/pkg/environment/aws"
+	"github.com/aws/karpenter-provider-aws/test/pkg/environment/common"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,43 +38,59 @@ import (
 )
 
 var ctx context.Context
+var stop context.CancelFunc
 var env *coretest.Environment
 var awsEnv *test.Environment
-var nodeClass *v1.EC2NodeClass
-var statusController *status.Controller
+var testEnv *environmentaws.Environment
+var versionController *controllersversion.Controller
 
-func TestAPIs(t *testing.T) {
+func TestAWS(t *testing.T) {
 	ctx = TestContextWithLogger(t)
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "EC2NodeClass")
+	RunSpecs(t, "VersionProvider")
 }
 
 var _ = BeforeSuite(func() {
-	env = coretest.NewEnvironment(coretest.WithCRDs(apis.CRDs...), coretest.WithCRDs(v1alpha1.CRDs...), coretest.WithFieldIndexers(coretest.NodeClaimNodeClassRefFieldIndexer(ctx)))
+	env = coretest.NewEnvironment(coretest.WithCRDs(apis.CRDs...), coretest.WithCRDs(v1alpha1.CRDs...))
 	ctx = coreoptions.ToContext(ctx, coretest.Options())
 	ctx = options.ToContext(ctx, test.Options())
+	ctx, stop = context.WithCancel(ctx)
 	awsEnv = test.NewEnvironment(ctx, env)
-
-	statusController = status.NewController(
-		env.Client,
-		awsEnv.SubnetProvider,
-		awsEnv.SecurityGroupProvider,
-		awsEnv.AMIProvider,
-		awsEnv.InstanceProfileProvider,
-		awsEnv.LaunchTemplateProvider,
-	)
+	testEnv = &environmentaws.Environment{Environment: &common.Environment{KubeClient: env.KubernetesInterface}}
+	versionController = controllersversion.NewController(awsEnv.VersionProvider)
 })
 
 var _ = AfterSuite(func() {
+	stop()
 	Expect(env.Stop()).To(Succeed(), "Failed to stop environment")
 })
 
 var _ = BeforeEach(func() {
-	ctx = coreoptions.ToContext(ctx, coretest.Options())
-	nodeClass = test.EC2NodeClass()
 	awsEnv.Reset()
+	awsEnv.EKSAPI.Reset()
 })
 
 var _ = AfterEach(func() {
 	ExpectCleanedUp(ctx, env.Client)
+})
+
+var _ = Describe("Operator", func() {
+
+	Context("with EKS_CONTROL_PLANE=true", func() {
+		It("should resolve Kubernetes Version via Describe Cluster with no errors", func() {
+			options.FromContext(ctx).EKSControlPlane = true
+			ExpectSingletonReconciled(ctx, versionController)
+			version := awsEnv.VersionProvider.Get(ctx)
+			Expect(version).To(Equal("1.29"))
+		})
+	})
+
+	Context("with EKS_CONTROL_PLANE=false", func() {
+		It("should resolve Kubernetes Version via K8s API", func() {
+			options.FromContext(ctx).EKSControlPlane = false
+			ExpectSingletonReconciled(ctx, versionController)
+			version := awsEnv.VersionProvider.Get(ctx)
+			Expect(version).To(Equal(testEnv.K8sVersion()))
+		})
+	})
 })

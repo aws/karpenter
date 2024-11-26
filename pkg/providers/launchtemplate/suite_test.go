@@ -98,8 +98,8 @@ var _ = BeforeSuite(func() {
 	fakeClock = &clock.FakeClock{}
 	cloudProvider = cloudprovider.New(awsEnv.InstanceTypesProvider, awsEnv.InstanceProvider, events.NewRecorder(&record.FakeRecorder{}),
 		env.Client, awsEnv.AMIProvider, awsEnv.SecurityGroupProvider)
-	cluster = state.NewCluster(fakeClock, env.Client)
-	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster)
+	cluster = state.NewCluster(fakeClock, env.Client, cloudProvider)
+	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, fakeClock)
 })
 
 var _ = AfterSuite(func() {
@@ -1441,7 +1441,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err = os.ReadFile("testdata/br_userdata_merged.golden")
 				Expect(err).To(BeNil())
-				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name))
+				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name))
 			})
 			It("should bootstrap when custom user data is empty", func() {
 				nodePool.Spec.Template.Spec.Taints = []corev1.Taint{{Key: "foo", Value: "bar", Effect: corev1.TaintEffectNoExecute}}
@@ -1455,7 +1455,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err := os.ReadFile("testdata/br_userdata_unmerged.golden")
 				Expect(err).To(BeNil())
-				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name))
+				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name))
 			})
 			It("should not bootstrap when provider ref points to a non-existent EC2NodeClass resource", func() {
 				nodePool.Spec.Template.Spec.NodeClassRef = &karpv1.NodeClassReference{
@@ -1655,7 +1655,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err = os.ReadFile("testdata/al2_userdata_merged.golden")
 				Expect(err).To(BeNil())
-				expectedUserData := fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name)
+				expectedUserData := fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name)
 				ExpectLaunchTemplatesCreatedWithUserData(expectedUserData)
 			})
 			It("should merge in custom user data when Content-Type is before MIME-Version", func() {
@@ -1668,7 +1668,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err = os.ReadFile("testdata/al2_userdata_merged.golden")
 				Expect(err).To(BeNil())
-				expectedUserData := fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name)
+				expectedUserData := fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name)
 				ExpectLaunchTemplatesCreatedWithUserData(expectedUserData)
 			})
 			It("should merge in custom user data not in multi-part mime format", func() {
@@ -1681,7 +1681,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err = os.ReadFile("testdata/al2_userdata_merged.golden")
 				Expect(err).To(BeNil())
-				expectedUserData := fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name)
+				expectedUserData := fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name)
 				ExpectLaunchTemplatesCreatedWithUserData(expectedUserData)
 			})
 			It("should handle empty custom user data", func() {
@@ -1692,7 +1692,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err := os.ReadFile("testdata/al2_userdata_unmerged.golden")
 				Expect(err).To(BeNil())
-				expectedUserData := fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name)
+				expectedUserData := fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name)
 				ExpectLaunchTemplatesCreatedWithUserData(expectedUserData)
 			})
 		})
@@ -1880,7 +1880,7 @@ essential = true
 					ExpectScheduled(ctx, env.Client, pod)
 					content, err := os.ReadFile("testdata/" + mergedFile)
 					Expect(err).To(BeNil())
-					expectedUserData := fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name)
+					expectedUserData := fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name)
 					ExpectLaunchTemplatesCreatedWithUserData(expectedUserData)
 				},
 				Entry("MIME", lo.ToPtr("al2023_mime_userdata_input.golden"), "al2023_mime_userdata_merged.golden"),
@@ -2077,7 +2077,7 @@ essential = true
 				Expect(awsEnv.EC2API.CalledWithCreateLaunchTemplateInput.Len()).To(Equal(0))
 			})
 			It("should choose amis from SSM if no selector specified in EC2NodeClass", func() {
-				version := lo.Must(awsEnv.VersionProvider.Get(ctx))
+				version := awsEnv.VersionProvider.Get(ctx)
 				awsEnv.SSMAPI.Parameters = map[string]string{
 					fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", version): "test-ami-123",
 				}
@@ -2153,7 +2153,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err = os.ReadFile("testdata/windows_userdata_merged.golden")
 				Expect(err).To(BeNil())
-				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name))
+				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name))
 			})
 			It("should bootstrap when custom user data is empty", func() {
 				ExpectApplied(ctx, env.Client, nodeClass, nodePool)
@@ -2168,7 +2168,7 @@ essential = true
 				ExpectScheduled(ctx, env.Client, pod)
 				content, err := os.ReadFile("testdata/windows_userdata_unmerged.golden")
 				Expect(err).To(BeNil())
-				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), karpv1.NodePoolLabelKey, nodePool.Name))
+				ExpectLaunchTemplatesCreatedWithUserData(fmt.Sprintf(string(content), nodeClass.Name, karpv1.NodePoolLabelKey, nodePool.Name))
 			})
 		})
 	})
@@ -2218,6 +2218,69 @@ essential = true
 			awsEnv.EC2API.CalledWithCreateLaunchTemplateInput.ForEach(func(ltInput *ec2.CreateLaunchTemplateInput) {
 				Expect(ltInput.LaunchTemplateData.MetadataOptions.InstanceMetadataTags).To(Equal(ec2types.LaunchTemplateInstanceMetadataTagsStateDisabled))
 			})
+		})
+	})
+	Context("Networking", func() {
+		Context("launch template respect to DNS ip for ipfamily selection", func() {
+			DescribeTable(
+				"should select correct ipFamily based on DNS ip",
+				func(ipFamily corev1.IPFamily) {
+					provider := launchtemplate.NewDefaultProvider(
+						ctx,
+						awsEnv.LaunchTemplateCache,
+						awsEnv.EC2API,
+						awsEnv.EKSAPI,
+						awsEnv.AMIResolver,
+						awsEnv.SecurityGroupProvider,
+						awsEnv.SubnetProvider,
+						awsEnv.LaunchTemplateProvider.CABundle,
+						make(chan struct{}),
+						net.ParseIP(lo.Ternary(ipFamily == corev1.IPv4Protocol, "10.0.100.10", "fd01:99f0:d47b::a")),
+						"https://test-cluster",
+					)
+					Expect(provider.ClusterIPFamily).To(Equal(ipFamily))
+				},
+				Entry("DNS has ipv4 address", corev1.IPv4Protocol),
+				Entry("DNS has ipv6 address", corev1.IPv6Protocol),
+			)
+		})
+		Context("should provision a v6 address and set v6 primary IP as true when running in an ipv6 cluster", func() {
+			DescribeTable(
+				"should set Primary IPv6 as true and provision a IPv6 address",
+				func(isPublicAddressSet, isPublic, isEFA bool) {
+					awsEnv.LaunchTemplateProvider.KubeDNSIP = net.ParseIP("fd4b:121b:812b::a")
+					awsEnv.LaunchTemplateProvider.ClusterIPFamily = corev1.IPv6Protocol
+					if isPublicAddressSet {
+						nodeClass.Spec.AssociatePublicIPAddress = lo.ToPtr(isPublic)
+					}
+					ExpectApplied(ctx, env.Client, nodePool, nodeClass)
+					pod := coretest.UnschedulablePod(lo.Ternary(isEFA, coretest.PodOptions{
+						ResourceRequirements: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{v1.ResourceEFA: resource.MustParse("2")},
+							Limits:   corev1.ResourceList{v1.ResourceEFA: resource.MustParse("2")},
+						},
+					}, coretest.PodOptions{}))
+					ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+					ExpectScheduled(ctx, env.Client, pod)
+					input := awsEnv.EC2API.CalledWithCreateLaunchTemplateInput.Pop()
+
+					Expect(len(input.LaunchTemplateData.NetworkInterfaces)).To(BeNumerically(">=", 1))
+					if !isPublicAddressSet && !isEFA {
+						Expect(input.LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress).To(BeNil())
+					}
+					if isEFA {
+						Expect(lo.FromPtr(input.LaunchTemplateData.NetworkInterfaces[0].InterfaceType)).To(Equal(string(ec2types.NetworkInterfaceTypeEfa)))
+						Expect(lo.FromPtr(input.LaunchTemplateData.NetworkInterfaces[0].AssociatePublicIpAddress)).To(Equal(isPublic))
+					}
+					Expect(lo.FromPtr(input.LaunchTemplateData.NetworkInterfaces[0].Ipv6AddressCount)).To(Equal(int32(1)))
+					Expect(lo.FromPtr(input.LaunchTemplateData.NetworkInterfaces[0].PrimaryIpv6)).To(BeTrue())
+
+				},
+				Entry("AssociatePublicIPAddress is not set and EFA is false", false, true, false),
+				Entry("AssociatePublicIPAddress is not set and EFA is true", false, false, true),
+				Entry("AssociatePublicIPAddress is set as true and EFA is true", true, true, true),
+				Entry("AssociatePublicIPAddress is set as false and EFA is false", true, false, false),
+			)
 		})
 	})
 })

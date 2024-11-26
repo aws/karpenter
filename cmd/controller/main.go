@@ -39,6 +39,7 @@ func main() {
 
 	op.
 		WithControllers(ctx, corecontrollers.NewControllers(
+			ctx,
 			op.Manager,
 			op.Clock,
 			op.GetClient(),
@@ -62,6 +63,7 @@ func main() {
 			op.PricingProvider,
 			op.AMIProvider,
 			op.LaunchTemplateProvider,
+			op.VersionProvider,
 			op.InstanceTypesProvider,
 		)...).
 		Start(ctx)

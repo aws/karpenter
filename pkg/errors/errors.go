@@ -38,6 +38,7 @@ var (
 	alreadyExistsErrorCodes = sets.New[string](
 		"EntityAlreadyExists",
 	)
+
 	// unfulfillableCapacityErrorCodes signify that capacity is temporarily unable to be launched
 	unfulfillableCapacityErrorCodes = sets.New[string](
 		"InsufficientInstanceCapacity",

@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
 
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	nodeclaimutils "sigs.k8s.io/karpenter/pkg/utils/nodeclaim"
 	"sigs.k8s.io/karpenter/pkg/utils/pretty"
 
 	"github.com/aws/karpenter-provider-aws/pkg/cache"
@@ -61,6 +62,7 @@ const (
 // trigger node health events or node spot interruption/rebalance events.
 type Controller struct {
 	kubeClient                client.Client
+	cloudProvider             cloudprovider.CloudProvider
 	clk                       clock.Clock
 	recorder                  events.Recorder
 	sqsProvider               sqs.Provider
@@ -69,11 +71,17 @@ type Controller struct {
 	cm                        *pretty.ChangeMonitor
 }
 
-func NewController(kubeClient client.Client, clk clock.Clock, recorder events.Recorder,
-	sqsProvider sqs.Provider, unavailableOfferingsCache *cache.UnavailableOfferings) *Controller {
-
+func NewController(
+	kubeClient client.Client,
+	cloudProvider cloudprovider.CloudProvider,
+	clk clock.Clock,
+	recorder events.Recorder,
+	sqsProvider sqs.Provider,
+	unavailableOfferingsCache *cache.UnavailableOfferings,
+) *Controller {
 	return &Controller{
 		kubeClient:                kubeClient,
+		cloudProvider:             cloudProvider,
 		clk:                       clk,
 		recorder:                  recorder,
 		sqsProvider:               sqsProvider,
@@ -150,7 +158,7 @@ func (c *Controller) handleMessage(ctx context.Context, nodeClaimInstanceIDMap m
 	nodeInstanceIDMap map[string]*corev1.Node, msg messages.Message) (err error) {
 
 	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("messageKind", msg.Kind()))
-	receivedMessages.WithLabelValues(string(msg.Kind())).Inc()
+	ReceivedMessages.Inc(map[string]string{messageTypeLabel: string(msg.Kind())})
 
 	if msg.Kind() == messages.NoOpKind {
 		return nil
@@ -165,7 +173,7 @@ func (c *Controller) handleMessage(ctx context.Context, nodeClaimInstanceIDMap m
 			err = multierr.Append(err, e)
 		}
 	}
-	messageLatency.Observe(time.Since(msg.StartTime()).Seconds())
+	MessageLatency.Observe(time.Since(msg.StartTime()).Seconds(), nil)
 	if err != nil {
 		return fmt.Errorf("acting on NodeClaims, %w", err)
 	}
@@ -177,7 +185,7 @@ func (c *Controller) deleteMessage(ctx context.Context, msg *sqstypes.Message) e
 	if err := c.sqsProvider.DeleteSQSMessage(ctx, msg); err != nil {
 		return fmt.Errorf("deleting sqs message, %w", err)
 	}
-	deletedMessages.Inc()
+	DeletedMessages.Inc(nil)
 	return nil
 }
 
@@ -216,11 +224,11 @@ func (c *Controller) deleteNodeClaim(ctx context.Context, msg messages.Message, 
 	}
 	log.FromContext(ctx).Info("initiating delete from interruption message")
 	c.recorder.Publish(interruptionevents.TerminatingOnInterruption(node, nodeClaim)...)
-	metrics.NodeClaimsDisruptedTotal.With(prometheus.Labels{
+	metrics.NodeClaimsDisruptedTotal.Inc(map[string]string{
 		metrics.ReasonLabel:       string(msg.Kind()),
 		metrics.NodePoolLabel:     nodeClaim.Labels[karpv1.NodePoolLabelKey],
 		metrics.CapacityTypeLabel: nodeClaim.Labels[karpv1.CapacityTypeLabelKey],
-	}).Inc()
+	})
 	return nil
 }
 
@@ -250,19 +258,19 @@ func (c *Controller) notifyForMessage(msg messages.Message, nodeClaim *karpv1.No
 // NodeClaim .status.providerID and the NodeClaim
 func (c *Controller) makeNodeClaimInstanceIDMap(ctx context.Context) (map[string]*karpv1.NodeClaim, error) {
 	m := map[string]*karpv1.NodeClaim{}
-	nodeClaimList := &karpv1.NodeClaimList{}
-	if err := c.kubeClient.List(ctx, nodeClaimList); err != nil {
+	nodeClaims, err := nodeclaimutils.ListManaged(ctx, c.kubeClient, c.cloudProvider)
+	if err != nil {
 		return nil, err
 	}
-	for i := range nodeClaimList.Items {
-		if nodeClaimList.Items[i].Status.ProviderID == "" {
+	for _, nc := range nodeClaims {
+		if nc.Status.ProviderID == "" {
 			continue
 		}
-		id, err := utils.ParseInstanceID(nodeClaimList.Items[i].Status.ProviderID)
+		id, err := utils.ParseInstanceID(nc.Status.ProviderID)
 		if err != nil || id == "" {
 			continue
 		}
-		m[id] = &nodeClaimList.Items[i]
+		m[id] = nc
 	}
 	return m, nil
 }
