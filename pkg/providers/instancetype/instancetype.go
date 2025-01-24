@@ -73,6 +73,11 @@ type DefaultProvider struct {
 	instanceTypesSeqNum uint64
 	// instanceTypesOfferingsSeqNum is a monotonically increasing change counter used to avoid the expensive hashing operation on instance types
 	instanceTypesOfferingsSeqNum uint64
+
+	// mutex required here to allow synchronization with other operations (not possible with atomics only)
+	muLastUnavailableOfferingsSeqNum sync.Mutex
+	// lastUnavailableOfferingsSeqNum is the most recently seen seq num of the unavailable offerings cache, used to track changes
+	lastUnavailableOfferingsSeqNum uint64
 }
 
 func NewDefaultProvider(instanceTypesCache *cache.Cache, discoveredCapacityCache *cache.Cache, ec2api sdk.EC2API, subnetProvider subnet.Provider, instanceTypesResolver Resolver) *DefaultProvider {
@@ -116,7 +121,10 @@ func (p *DefaultProvider) List(ctx context.Context, nodeClass *v1.EC2NodeClass) 
 	// Compute hash key against node class AMIs (used to force cache rebuild when AMIs change)
 	amiHash, _ := hashstructure.Hash(nodeClass.Status.AMIs, hashstructure.FormatV2, &hashstructure.HashOptions{SlicesAsSets: true})
 
-	key := fmt.Sprintf("%d-%d-%016x-%016x-%016x",
+	// Store first observed value of seqNum before instance type resolution to track modification
+	unavailableOfferingsSeqNum := p.instanceTypesResolver.GetUnavailableOfferingsSeqNum()
+
+	key := fmt.Sprintf("%d-%d-%016x-%016x-%s",
 		p.instanceTypesSeqNum,
 		p.instanceTypesOfferingsSeqNum,
 		amiHash,
@@ -124,14 +132,10 @@ func (p *DefaultProvider) List(ctx context.Context, nodeClass *v1.EC2NodeClass) 
 		p.instanceTypesResolver.CacheKey(nodeClass),
 	)
 
-	if p.instanceTypesResolver.UnavailableOfferingsChanged() {
-		p.instanceTypesCache.Flush()
-	} else {
-		if item, ok := p.instanceTypesCache.Get(key); ok {
-			// Ensure what's returned from this function is a shallow-copy of the slice (not a deep-copy of the data itself)
-			// so that modifications to the ordering of the data don't affect the original
-			return append([]*cloudprovider.InstanceType{}, item.([]*cloudprovider.InstanceType)...), nil
-		}
+	if item, ok := p.instanceTypesCache.Get(key); ok {
+		// Ensure what's returned from this function is a shallow-copy of the slice (not a deep-copy of the data itself)
+		// so that modifications to the ordering of the data don't affect the original
+		return append([]*cloudprovider.InstanceType{}, item.([]*cloudprovider.InstanceType)...), nil
 	}
 
 	// Get all zones across all offerings
@@ -188,7 +192,22 @@ func (p *DefaultProvider) List(ctx context.Context, nodeClass *v1.EC2NodeClass) 
 		}
 		return it
 	})
-	p.instanceTypesCache.SetDefault(key, result)
+
+	p.muLastUnavailableOfferingsSeqNum.Lock()
+
+	// Flush the cache if the current unavailable offerings seq num has changed since the last flush
+	if seqNum := p.instanceTypesResolver.GetUnavailableOfferingsSeqNum(); p.lastUnavailableOfferingsSeqNum < seqNum {
+		p.instanceTypesCache.Flush()
+		p.lastUnavailableOfferingsSeqNum = seqNum
+	}
+
+	// Only cache the result if the seq num has not changed since the key was formed
+	if p.lastUnavailableOfferingsSeqNum == unavailableOfferingsSeqNum {
+		p.instanceTypesCache.SetDefault(key, result)
+	}
+
+	p.muLastUnavailableOfferingsSeqNum.Unlock()
+
 	return result, nil
 }
 

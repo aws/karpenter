@@ -63,15 +63,14 @@ type Resolver interface {
 	CacheKey(nodeClass *v1.EC2NodeClass) string
 	// Resolve generates an InstanceType based on raw InstanceTypeInfo and NodeClass setting data
 	Resolve(ctx context.Context, info ec2types.InstanceTypeInfo, zoneData []ZoneData, nodeClass *v1.EC2NodeClass) *cloudprovider.InstanceType
-	// UnavailableOfferingsChanged tells whether the unavailable offerings cache has been updated since the last call
-	UnavailableOfferingsChanged() bool
+	// GetUnavailableOfferingsSeqNum returns the current seq num of the unavailable offerings cache
+	GetUnavailableOfferingsSeqNum() uint64
 }
 
 type DefaultResolver struct {
-	region                             string
-	pricingProvider                    pricing.Provider
-	unavailableOfferings               *awscache.UnavailableOfferings
-	previousUnavailableOfferingsSeqNum uint64
+	region               string
+	pricingProvider      pricing.Provider
+	unavailableOfferings *awscache.UnavailableOfferings
 }
 
 func NewDefaultResolver(region string, pricingProvider pricing.Provider, unavailableOfferingsCache *awscache.UnavailableOfferings) *DefaultResolver {
@@ -111,12 +110,8 @@ func (d *DefaultResolver) Resolve(ctx context.Context, info ec2types.InstanceTyp
 		kc.SystemReserved, kc.EvictionHard, kc.EvictionSoft, nodeClass.AMIFamily(), d.createOfferings(ctx, info, zoneData))
 }
 
-func (d *DefaultResolver) UnavailableOfferingsChanged() bool {
-	if d.previousUnavailableOfferingsSeqNum == d.unavailableOfferings.SeqNum {
-		return false
-	}
-	d.previousUnavailableOfferingsSeqNum = d.unavailableOfferings.SeqNum
-	return true
+func (d *DefaultResolver) GetUnavailableOfferingsSeqNum() uint64 {
+	return d.unavailableOfferings.SeqNum
 }
 
 // createOfferings creates a set of mutually exclusive offerings for a given instance type. This provider maintains an
