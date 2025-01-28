@@ -108,6 +108,18 @@ func IsLaunchTemplateNotFound(err error) bool {
 	return false
 }
 
+func IsNotDryRunError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return !strings.Contains(apiErr.ErrorCode(), "DryRunOperation")
+	}
+	return !strings.Contains(err.Error(), "DryRunOperation")
+
+}
+
 // ToReasonMessage converts an error message from AWS into a well-known condition reason
 // and well-known condition message that can be used for Launch failure classification
 // nolint:gocyclo

@@ -44,7 +44,9 @@ import (
 	"sigs.k8s.io/karpenter/pkg/events"
 
 	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
+	sdk "github.com/aws/karpenter-provider-aws/pkg/aws"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/amifamily"
+	"github.com/aws/karpenter-provider-aws/pkg/providers/instance"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/instanceprofile"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/launchtemplate"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/securitygroup"
@@ -69,7 +71,7 @@ type Controller struct {
 }
 
 func NewController(kubeClient client.Client, recorder events.Recorder, subnetProvider subnet.Provider, securityGroupProvider securitygroup.Provider,
-	amiProvider amifamily.Provider, instanceProfileProvider instanceprofile.Provider, launchTemplateProvider launchtemplate.Provider) *Controller {
+	amiProvider amifamily.Provider, instanceProfileProvider instanceprofile.Provider, launchTemplateProvider launchtemplate.Provider, instanceProvider instance.Provider, ec2api sdk.EC2API) *Controller {
 
 	return &Controller{
 		kubeClient:             kubeClient,
@@ -79,7 +81,7 @@ func NewController(kubeClient client.Client, recorder events.Recorder, subnetPro
 		subnet:                 &Subnet{subnetProvider: subnetProvider},
 		securityGroup:          &SecurityGroup{securityGroupProvider: securityGroupProvider},
 		instanceProfile:        &InstanceProfile{instanceProfileProvider: instanceProfileProvider},
-		validation:             &Validation{},
+		validation:             &Validation{ec2api: ec2api, amiProvider: amiProvider, launchTemplateProvider: launchTemplateProvider, instanceProvider: instanceProvider},
 		readiness:              &Readiness{launchTemplateProvider: launchTemplateProvider},
 	}
 }
